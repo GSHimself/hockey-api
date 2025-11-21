@@ -1,7 +1,3 @@
-Här är en kort och tydlig **README.md** som passar perfekt för ditt projekt:
-
----
-
 # Hockey API
 
 Ett litet Python-API (FastAPI) som hämtar **senaste spelade** och **nästa kommande** MODO-match från Swehockeys officiella spelschema:
