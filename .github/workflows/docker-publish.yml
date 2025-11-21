@@ -33,5 +33,5 @@ jobs:
           context: .
           push: true
           tags: |
-            ghcr.io/${{ steps.lc.outputs.owner }}/modo-swehockey-api:latest
-            ghcr.io/${{ steps.lc.outputs.owner }}/modo-swehockey-api:${{ github.ref_name }}
+            ghcr.io/${{ steps.lc.outputs.owner }}/hockey-api:latest
+            ghcr.io/${{ steps.lc.outputs.owner }}/hockey-api:${{ github.ref_name }}
