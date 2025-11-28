@@ -8,7 +8,7 @@ from fastapi import FastAPI, HTTPException
 from bs4 import BeautifulSoup
 
 URL = "https://stats.swehockey.se/ScheduleAndResults/Schedule/18266"
-MODO_TAG = "modo"  # används för case-insensitive matchning
+MODO_TAG = "modo"
 
 THESPORTSDB_API_KEY = "123"  # byt till egen nyckel om du har
 THESPORTSDB_BASE = "https://www.thesportsdb.com/api/v1/json"
@@ -18,6 +18,24 @@ app = FastAPI()
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 TIME_RE = re.compile(r"^\d{2}:\d{2}$")
 SCORE_RE = re.compile(r"^(\d+)\s*-\s*(\d+)$")
+
+# Ny regex för hela Game-raden (både spelade & kommande matcher)
+GAME_LINE_RE = re.compile(
+    r"""^
+    (?P<home>.+?)          # hemalag (så kort som möjligt)
+    \s+-\s+
+    (?P<away>.+?)          # bortalag (så kort som möjligt)
+    (?:                    # ev. resultat + perioder + publik (endast spelade matcher)
+        \s+
+        (?P<hs>\d+)\s*-\s*(?P<as>\d+)   # resultat, t.ex. 3 - 2
+        \s+\(.*?\)\s+                   # periodresultat inom parentes
+        (?P<spec>\d+)                   # publiksiffra
+    )?
+    \s+
+    (?P<venue>.+)          # arena (alltid sist)
+    $""",
+    re.VERBOSE,
+)
 
 
 def empty_game():
@@ -32,116 +50,88 @@ def empty_game():
     }
 
 
-def is_date(s: str) -> bool:
-    return bool(DATE_RE.match(s))
-
-
 def is_time(s: str) -> bool:
     return bool(TIME_RE.match(s))
 
 
-def is_score_line(s: str) -> bool:
-    # score ("3 - 2") eller "-" (kommande match)
-    return bool(SCORE_RE.match(s)) or s == "-"
-
-
 def parse_matches_from_lines(lines):
     """
-    Läser rad för rad och bygger matcher så här:
+    Ny version anpassad till nuvarande Swehockey-layout:
 
-    current_date uppdateras när vi ser YYYY-MM-DD.
-    När vi ser TIME + TIME startar vi en ny match:
-      - läser Game (antingen "A - B" eller "A", "-", "B")
-      - läser Result ("X - Y" eller "-")
-      - hoppar periodraden om den börjar med "("
-      - hoppar publiksiffra om den är heltal
-      - nästa rad = arena
+    - Datumrader ser ut som "2025-11-28 2025-11-28" → vi tar första 10 tecknen.
+    - För varje tid ("19:00", "20:30", ...) kommer två identiska rader → vi tar en.
+    - Direkt efter tiden kommer en "Game-rad":
+        * Spelad:
+          "MoDo Hockey  -  Östersunds IK 3 - 1 (0-0, 1-1, 2-0) 7298 Hägglunds Arena"
+        * Kommande:
+          "MoDo Hockey  -  IF Björklöven Hägglunds Arena"
+
+      Vi parsar hela den raden med GAME_LINE_RE och får ut:
+        - home_team, away_team
+        - ev. home_score, away_score, spectators
+        - venue
     """
     games = []
     current_date = ""
+    last_time = ""
+
     i = 0
     L = len(lines)
 
     while i < L:
         s = lines[i]
 
-        # Uppdatera datum när vi ser YYYY-MM-DD
-        if is_date(s):
-            current_date = s
+        # Datumrad (t.ex. "2025-11-28 2025-11-28")
+        if re.match(r"^\d{4}-\d{2}-\d{2}", s):
+            current_date = s[:10]  # ta första datumet
             i += 1
             continue
 
-        # Start av match: två tidsrader i följd
-        if is_time(s) and i + 1 < L and is_time(lines[i + 1]):
-            time = s
-            i += 2  # hoppa båda tidsraderna
+        # Tidsrad (t.ex. "19:00")
+        if is_time(s):
+            last_time = s
 
-            if i >= L:
-                break
-
-            # -------- Game (lag) --------
-            # Två varianter:
-            # 1) "Lag A - Lag B" på samma rad
-            # 2) "Lag A" / "-" / "Lag B" på tre rader
-            if " - " in lines[i]:
-                home_team, away_team = [p.strip() for p in lines[i].split(" - ", 1)]
-                i += 1
-            elif i + 2 < L and lines[i + 1] == "-":
-                home_team = lines[i]
-                away_team = lines[i + 2]
-                i += 3
+            # hoppa ev. dublett av samma tid
+            if i + 1 < L and lines[i + 1] == s:
+                i += 2
             else:
-                # Om vi inte kan tolka lagen hoppar vi vidare
-                i += 1
-                continue
-
-            # -------- Resultat --------
-            if i >= L:
-                break
-
-            result_line = lines[i]
-            i += 1
-
-            m = SCORE_RE.match(result_line)
-            if m:
-                home_score = int(m.group(1))
-                away_score = int(m.group(2))
-            else:
-                home_score = None
-                away_score = None
-
-            # -------- Periodresultat (valfritt) --------
-            if i < L and lines[i].startswith("("):
                 i += 1
 
-            # -------- Publik (valfritt) --------
-            spectators = None
-            if i < L and lines[i].isdigit():
-                spectators = int(lines[i])
+            # nu förväntar vi oss en Game-rad med "Lag A - Lag B ..."
+            if i < L and " - " in lines[i]:
+                match_line = lines[i]
                 i += 1
 
-            # -------- Arena --------
-            venue = ""
-            if i < L:
-                venue = lines[i]
-                i += 1
+                m = GAME_LINE_RE.match(match_line)
+                if not m:
+                    # Om vi inte kan tolka matchraden hoppar vi vidare
+                    continue
 
-            games.append(
-                {
-                    "date": current_date,
-                    "time": time,
-                    "home_team": home_team,
-                    "away_team": away_team,
-                    "home_score": home_score,
-                    "away_score": away_score,
-                    "venue": venue,
-                    "spectators": spectators,
-                }
-            )
+                home_team = (m.group("home") or "").strip()
+                away_team = (m.group("away") or "").strip()
+                hs = m.group("hs")
+                as_ = m.group("as")
+                home_score = int(hs) if hs is not None else None
+                away_score = int(as_) if as_ is not None else None
+                spectators = m.group("spec")
+                spectators = int(spectators) if spectators is not None else None
+                venue = (m.group("venue") or "").strip()
+
+                games.append(
+                    {
+                        "date": current_date,
+                        "time": last_time,
+                        "home_team": home_team,
+                        "away_team": away_team,
+                        "home_score": home_score,
+                        "away_score": away_score,
+                        "venue": venue,
+                        "spectators": spectators,
+                    }
+                )
 
             continue
 
-        # Ingen match, bara vidare
         i += 1
 
     return games
@@ -183,10 +173,6 @@ def compute_modo_result(game) -> str:
 
 
 def normalize_badge_url(url: str | None) -> str | None:
-    """
-    Fixar badge-URL så att den alltid pekar på r2.thesportsdb.com.
-    Returnerar None om url är tom eller ogiltig.
-    """
     if not url:
         return None
 
@@ -198,7 +184,6 @@ def normalize_badge_url(url: str | None) -> str | None:
     if "thesportsdb.com" not in (parsed.netloc or ""):
         return url
 
-    # Tvinga CDN-domänen
     netloc = "r2.thesportsdb.com"
     normalized = parsed._replace(netloc=netloc)
     return urlunparse(normalized)
@@ -206,13 +191,9 @@ def normalize_badge_url(url: str | None) -> str | None:
 
 @lru_cache(maxsize=128)
 def get_team_badge(team_name: str) -> str | None:
-    """
-    Hämtar lagets logga (badge) från TheSportsDB och cachar resultatet.
-    """
     if not team_name:
         return None
 
-    # Enkel specialhantering för MoDo
     query = team_name
     if "modo" in team_name.lower():
         query = "Modo"
@@ -236,9 +217,6 @@ def get_team_badge(team_name: str) -> str | None:
 
 
 def attach_badges(game):
-    """
-    Lägger till home_badge och away_badge i game-dict.
-    """
     if not game:
         return game
 
@@ -252,7 +230,6 @@ def attach_badges(game):
 
 @app.get("/modo")
 async def modo_endpoint():
-    # 1. Hämta HTML
     try:
         async with httpx.AsyncClient(timeout=20.0) as client:
             r = await client.get(URL, headers={"User-Agent": "Mozilla/5.0"})
@@ -261,32 +238,24 @@ async def modo_endpoint():
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch schedule: {e}")
 
-    # 2. Plocka ut ren text & rader
     soup = BeautifulSoup(html, "html.parser")
     text = soup.get_text("\n").replace("\u00a0", " ")
     lines = [l.strip() for l in text.splitlines() if l.strip()]
 
-    # 3. Parsea alla matcher
     all_games = parse_matches_from_lines(lines)
-
-    # 4. Filtrera ut MODO-matcher
     modo_games = [g for g in all_games if is_modo_game(g)]
 
-    # 5. Dela upp i spelade & kommande
     played = [g for g in modo_games if g["home_score"] is not None]
     upcoming = [g for g in modo_games if g["home_score"] is None]
 
     last_game = played[-1] if played else empty_game()
     next_game = upcoming[0] if upcoming else empty_game()
 
-    # 6. Berika med loggor
     last_game = attach_badges(last_game)
     next_game = attach_badges(next_game)
 
-    # 7. Räkna ut MODO-resultat för senaste matchen
     modo_result = compute_modo_result(last_game)
 
-    # 8. Returnera format som din custom-api förväntar sig
     return {
         "last_game": {
             "date": last_game["date"],
