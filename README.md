@@ -1,106 +1,198 @@
-# Hockey API
-
-Ett litet Python-API (FastAPI) som hämtar **senaste spelade** och **nästa kommande** MODO-match från Swehockeys officiella spelschema:
-
-👉 [https://stats.swehockey.se/ScheduleAndResults/Schedule/18266](https://stats.swehockey.se/ScheduleAndResults/Schedule/18266)
-
-API:et scrapar HTML-innehållet direkt från Swehockey och gör om det till ett strukturerat JSON-svar som kan användas t.ex. i **Glance/Custom API-widgets**.
+Sure! Here is a clean, GitHub-ready **README.md** for your project — written for developers who want to run, configure, or contribute to the service.
 
 ---
 
-## 🚀 Funktioner
+# 🏒 Hockey Schedule API
 
-* Hämtar live-data från Swehockey (ingen cache på API-sidan).
-* Identifierar alla matcher där **MoDo Hockey** är hemma eller bortalag.
-* Hittar:
+A small FastAPI microservice that fetches hockey schedules from **stats.swehockey.se**, parses the raw HTML, and exposes a clean JSON API for a specific team.
+Designed for dashboards like **Glance**, home-lab widgets, or automation setups.
 
-  * **Senaste spelade match** (med resultat).
-  * **Nästa kommande match** (utan resultat).
-* Parsern hanterar Swehockeys icke-standardiserade HTML-layout.
-* Returnerar ren, enkel och widget-vänlig JSON.
+The API supports **any team**, based on a configurable substring (e.g., `"modo"`, `"aik"`, `"björklöven"`).
+No code changes are required — everything is configured via environment variables.
 
 ---
 
-## 📡 API-endpoint
+## ✨ Features
+
+* Fetches & parses games from a Swehockey schedule URL
+* Supports *any* team through a simple environment variable (`TEAM_TAG`)
+* Returns both **last played game** and **next upcoming game**
+* Automatically fetches **team badges/logos** from TheSportsDB
+* Computes match result from your team’s perspective:
+
+  * `"win"`, `"loss"`, `"draw"`
+* Lightweight, fast, cache-friendly
+* Perfect for use with **Glance dashboards**, Home Assistant, or custom UIs
+* Stateless → easy to deploy in Docker, Kubernetes, or k3s
+
+---
+
+## 🚀 Quick Start (Docker)
+
+Run the API for MoDo Hockey:
+
+```bash
+docker run -d \
+  -p 8000:8000 \
+  -e TEAM_TAG="modo" \
+  -e SCHEDULE_URL="https://stats.swehockey.se/ScheduleAndResults/Schedule/18266" \
+  -e THESPORTSDB_API_KEY="YOUR_API_KEY" \
+  hockey-api:latest
+```
+
+Then open:
 
 ```
-GET /modo
+http://localhost:8000/team
 ```
 
-Svar:
+---
+
+## ⚙️ Configuration
+
+The service is configured entirely with environment variables:
+
+| Variable              | Required | Description                                            | Example                      |
+| --------------------- | -------- | ------------------------------------------------------ | ---------------------------- |
+| `TEAM_TAG`            | Yes      | Substring used to identify the team (case-insensitive) | `modo`, `aik`, `björklöven`  |
+| `SCHEDULE_URL`        | Yes      | Swehockey schedule URL for your league/season          | `https://.../Schedule/18266` |
+| `THESPORTSDB_API_KEY` | Optional | API key for badge/logo fetching                        | `123` (free tier)            |
+
+### How TEAM_TAG works
+
+The API matches all games where `TEAM_TAG` appears in either team name.
+Examples:
+
+| TEAM_TAG | Matches                          |
+| -------- | -------------------------------- |
+| `modo`   | “MoDo Hockey”, “MODO Hockey Dam” |
+| `löven`  | “IF Björklöven”                  |
+| `aik`    | “AIK”, “AIK Hockey”              |
+
+---
+
+## 📡 API Endpoints
+
+### `GET /team`
+
+Returns the last played match and the next upcoming match for `TEAM_TAG`.
+
+#### Example JSON output
 
 ```json
 {
+  "team_tag": "modo",
+  "team_name": "MoDo Hockey",
   "last_game": {
-    "date": "2025-11-12",
+    "date": "2025-11-26",
     "time": "19:00",
-    "home_team": "Östersunds IK",
+    "home_team": "AIK",
     "away_team": "MoDo Hockey",
-    "home_score": 0,
-    "away_score": 3,
-    "venue": "Östersund Arena Hall A"
+    "home_score": 1,
+    "away_score": 2,
+    "venue": "Hovet, Johanneshov",
+    "home_badge": "https://r2.thesportsdb.com/images/media/team/badge123.png",
+    "away_badge": "https://r2.thesportsdb.com/images/media/team/badge456.png",
+    "team_result": "win"
   },
   "next_game": {
-    "date": "2025-11-14",
-    "time": "19:00",
+    "date": "2025-11-28",
+    "time": "20:30",
     "home_team": "MoDo Hockey",
-    "away_team": "Kalmar HC",
+    "away_team": "IF Björklöven",
     "home_score": null,
     "away_score": null,
-    "venue": "Hägglunds Arena"
+    "venue": "Hägglunds Arena",
+    "home_badge": "...",
+    "away_badge": "..."
   }
 }
 ```
 
 ---
 
-## 🐳 Kör med Docker
+## 📦 Docker Compose Example
 
-Bygg:
-
-```bash
-docker build -t modo-swehockey-api .
-```
-
-Starta:
-
-```bash
-docker run -d -p 8000:8000 --name modo-api modo-swehockey-api
-```
-
-API finns då på:
-
-```
-http://localhost:8000/modo
+```yaml
+services:
+  hockey-api:
+    image: hockey-api:latest
+    environment:
+      TEAM_TAG: "MoDo"
+      SCHEDULE_URL: "https://stats.swehockey.se/ScheduleAndResults/Schedule/18266"
+      THESPORTSDB_API_KEY: "YOUR_API_KEY"
+    ports:
+      - "8000:8000"
 ```
 
 ---
 
-## 🧩 Användning i Glance (Custom API)
+## 🖥️ Using with Glance Dashboard
+
+Here is a minimal Glance widget example:
 
 ```yaml
 - type: custom-api
-  title: MODO - matcher
+  title: Hockey – Matches
   cache: 30m
-  url: http://modo-swehockey-api:8000/modo
+  url: http://hockey-api:8000/team
 ```
 
-Widgeten hämtar data var **30:e minut** (styrt av `cache`-värdet).
+You can customize it with logos, score colors, etc.
 
 ---
 
-## 📁 Projektstruktur
+## 🏗️ Development
 
+Install dependencies:
+
+```bash
+pip install -r requirements.txt
 ```
-.
-├── app.py               # API-logik och HTML-parser
-├── requirements.txt     # Python-dependencies
-└── Dockerfile           # Produktion-redo container
+
+Run locally:
+
+```bash
+uvicorn app:app --reload --host 0.0.0.0 --port 8000
 ```
 
 ---
 
-## 📝 Licens
+## 🧩 How It Works
 
-Fri att använda för personliga projekt, dashboardar, Glance-screens och liknande.
+1. Fetches Swehockey schedule HTML
+2. Extracts text and splits it into logical lines
+3. Parses:
 
+   * Dates
+   * Times
+   * Teams
+   * Results (if available)
+   * Spectators
+   * Venue
+4. Filters by your `TEAM_TAG`
+5. Computes last/next games
+6. Fetches badges via TheSportsDB
+7. Returns clean JSON suited for dashboards
+
+---
+
+## 🤝 Contributing
+
+Pull requests and issues are welcome!
+Ideas for improvements include:
+
+* better parser for irregular Swehockey formats
+* multi-team support (`/team/{tag}`)
+* caching layer
+* tests
+* logo provider fallbacks
+* automatic schedule discovery
+
+---
+
+## 📄 License
+
+MIT License – you are free to use, modify and distribute.
+
+---
