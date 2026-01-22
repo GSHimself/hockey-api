@@ -6,6 +6,8 @@ Designed for dashboards like **Glance**, home-lab widgets, or automation setups.
 The API supports **any team**, based on a configurable substring (e.g., `"modo"`, `"aik"`, `"björklöven"`).
 No code changes are required — everything is configured via environment variables.
 
+![exampleIMg](./example/example.jpeg)
+
 ---
 
 ## ✨ Features
