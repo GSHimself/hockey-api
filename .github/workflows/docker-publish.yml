@@ -33,5 +33,6 @@ jobs:
           context: .
           push: true
           tags: |
-            ghcr.io/${{ steps.lc.outputs.owner }}/hockey-api:latest
-            ghcr.io/${{ steps.lc.outputs.owner }}/hockey-api:${{ github.ref_name }}
+            tags: |
+              ghcr.io/${{ github.repository }}:latest
+              ghcr.io/${{ github.repository }}:${{ github.ref_name }}
