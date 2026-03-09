@@ -66,6 +66,7 @@ logger = logging.getLogger("hockey-api")
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 TIME_RE = re.compile(r"^\d{2}:\d{2}$")
 SCORE_RE = re.compile(r"^(\d+)\s*-\s*(\d+)$")
+DATETIME_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2})$")
 
 
 @app.middleware("http")
@@ -119,6 +120,17 @@ def is_score_line(s: str) -> bool:
     return bool(SCORE_RE.match(s)) or s == "-"
 
 
+def parse_datetime_line(s: str) -> tuple[str, str] | None:
+    m = DATETIME_RE.match(s)
+    if not m:
+        return None
+    return m.group(1), m.group(2)
+
+
+def looks_like_new_match_start(s: str) -> bool:
+    return is_date(s) or is_time(s) or parse_datetime_line(s) is not None
+
+
 def parse_matches_from_lines(lines):
     """
     Läser rad för rad och bygger matcher så här (DIN ORIGINELLA LOGIK):
@@ -139,14 +151,22 @@ def parse_matches_from_lines(lines):
     while i < L:
         s = lines[i]
 
+        parsed_datetime = parse_datetime_line(s)
+
         if is_date(s):
             current_date = s
             i += 1
             continue
 
-        if is_time(s) and i + 1 < L and is_time(lines[i + 1]):
+        time = None
+        if parsed_datetime:
+            current_date, time = parsed_datetime
+            i += 1
+        elif is_time(s) and i + 1 < L and is_time(lines[i + 1]):
             time = s
             i += 2
+
+        if time:
 
             if i >= L:
                 break
@@ -162,34 +182,37 @@ def parse_matches_from_lines(lines):
                 i += 1
                 continue
 
-            # -------- Resultat --------
-            if i >= L:
-                break
-
-            result_line = lines[i]
-            i += 1
-
-            m = SCORE_RE.match(result_line)
-            if m:
-                home_score = int(m.group(1))
-                away_score = int(m.group(2))
-            else:
-                home_score = None
-                away_score = None
-
-            # -------- Periodresultat (valfritt) --------
-            if i < L and lines[i].startswith("("):
-                i += 1
-
-            # -------- Publik (valfritt) --------
+            home_score = None
+            away_score = None
             spectators = None
-            if i < L and lines[i].isdigit():
-                spectators = int(lines[i])
+
+            venue = ""
+
+            # -------- Resultat (valfritt) --------
+            if i < L and is_score_line(lines[i]):
+                result_line = lines[i]
                 i += 1
 
-            # -------- Arena --------
-            venue = ""
-            if i < L:
+                m = SCORE_RE.match(result_line)
+                if m:
+                    home_score = int(m.group(1))
+                    away_score = int(m.group(2))
+
+                # -------- Periodresultat (valfritt) --------
+                if i < L and lines[i].startswith("("):
+                    i += 1
+
+                # -------- Publik (valfritt) --------
+                if i < L and lines[i].isdigit():
+                    spectators = int(lines[i])
+                    i += 1
+
+                # -------- Arena --------
+                if i < L and not looks_like_new_match_start(lines[i]):
+                    venue = lines[i]
+                    i += 1
+            elif i < L and not looks_like_new_match_start(lines[i]) and " - " not in lines[i]:
+                # Slutspelsformat: ingen resultatkolumn, nästa rad innehåller omgång/arena.
                 venue = lines[i]
                 i += 1
 
