@@ -1,6 +1,8 @@
 import os
 import re
 import asyncio
+import logging
+import time
 from datetime import datetime
 from functools import lru_cache
 from urllib.parse import urlparse, urlunparse
@@ -8,7 +10,7 @@ from urllib.parse import urlparse, urlunparse
 import httpx
 import requests
 from bs4 import BeautifulSoup
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 
 TEAM_TAG = os.getenv("TEAM_TAG", "modo").lower()
 
@@ -51,9 +53,43 @@ THESPORTSDB_BASE = "https://www.thesportsdb.com/api/v1/json"
 
 app = FastAPI()
 
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+logging.basicConfig(
+    level=getattr(logging, LOG_LEVEL, logging.INFO),
+    format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+)
+logger = logging.getLogger("hockey-api")
+
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 TIME_RE = re.compile(r"^\d{2}:\d{2}$")
 SCORE_RE = re.compile(r"^(\d+)\s*-\s*(\d+)$")
+
+
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    start_time = time.perf_counter()
+    logger.info("Request started: %s %s", request.method, request.url.path)
+    try:
+        response = await call_next(request)
+    except Exception:
+        duration_ms = (time.perf_counter() - start_time) * 1000
+        logger.exception(
+            "Request failed: %s %s in %.1fms",
+            request.method,
+            request.url.path,
+            duration_ms,
+        )
+        raise
+
+    duration_ms = (time.perf_counter() - start_time) * 1000
+    logger.info(
+        "Request completed: %s %s -> %s in %.1fms",
+        request.method,
+        request.url.path,
+        response.status_code,
+        duration_ms,
+    )
+    return response
 
 
 def empty_game():
@@ -292,13 +328,31 @@ async def fetch_schedule_html(client: httpx.AsyncClient, url: str) -> str | None
     """
     for attempt in range(1, SCHEDULE_FETCH_RETRIES + 1):
         try:
+            logger.debug(
+                "Fetching schedule url=%s attempt=%s/%s",
+                url,
+                attempt,
+                SCHEDULE_FETCH_RETRIES,
+            )
             response = await client.get(url, headers={"User-Agent": "Mozilla/5.0"})
             response.raise_for_status()
+            logger.info("Fetched schedule url=%s status=%s", url, response.status_code)
             return response.text
         except Exception as e:
             if attempt >= SCHEDULE_FETCH_RETRIES:
-                print(f"[Schedule] Failed to fetch {url} after {attempt} attempts: {e}")
+                logger.exception(
+                    "Failed to fetch schedule url=%s after %s attempts",
+                    url,
+                    attempt,
+                )
                 return None
+            logger.warning(
+                "Fetch failed url=%s attempt=%s/%s error=%s",
+                url,
+                attempt,
+                SCHEDULE_FETCH_RETRIES,
+                e,
+            )
             await asyncio.sleep(SCHEDULE_FETCH_BACKOFF_SECONDS * attempt)
 
 
@@ -341,8 +395,8 @@ def get_team_badge(team_name: str) -> str | None:
         resp = requests.get(url, params={"t": query}, timeout=10)
         resp.raise_for_status()
         data = resp.json()
-    except Exception as e:
-        print(f"[TheSportsDB] Error fetching badge for {team_name}: {e}")
+    except Exception:
+        logger.exception("Error fetching badge for team=%s", team_name)
         return None
 
     teams = data.get("teams") or []
@@ -383,6 +437,7 @@ async def team_endpoint():
     Generisk endpoint: returnerar senaste & nästa match för laget TEAM_TAG.
     Styrs av miljövariabeln TEAM_TAG och SCHEDULE_URL/SCHEDULE_URLS.
     """
+    logger.info("Building /team response for team_tag=%s", TEAM_TAG)
     # 1. Hämta HTML för alla konfigurerade scheman
     all_games = []
     timeout = httpx.Timeout(connect=5.0, read=20.0, write=10.0, pool=5.0)
@@ -397,16 +452,19 @@ async def team_endpoint():
         all_games.extend(parse_games_from_html(html))
 
     if not all_games:
+        logger.error("All schedule URL fetches failed for urls=%s", SCHEDULE_URLS)
         raise HTTPException(
             status_code=500,
             detail="Failed to fetch schedule(s): all configured schedule URLs failed",
         )
 
     all_games = merge_unique_games(all_games)
+    logger.info("Parsed total unique games=%s", len(all_games))
 
     # 2. Filtrera ut matcher för TEAM_TAG
     team_games = [g for g in all_games if is_team_game(g)]
     dated_team_games = sorted(((game_datetime_key(g), g) for g in team_games), key=lambda x: x[0])
+    logger.info("Filtered team games=%s", len(team_games))
 
     # 3. Dela upp i spelade & kommande
     now = datetime.now()
@@ -433,6 +491,12 @@ async def team_endpoint():
 
     # 6. Gissa ett lagnamn
     team_name = guess_team_name([g for _, g in dated_team_games])
+    logger.info(
+        "Prepared /team response: team_name=%s last_game_date=%s next_game_date=%s",
+        team_name,
+        last_game.get("date"),
+        next_game.get("date"),
+    )
 
     # 7. Return
     return {
