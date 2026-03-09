@@ -105,6 +105,7 @@ def empty_game():
         "home_score": None,
         "away_score": None,
         "venue": "",
+        "round_detail": "",
     }
 
 
@@ -129,6 +130,47 @@ def parse_datetime_line(s: str) -> tuple[str, str] | None:
 
 def looks_like_new_match_start(s: str) -> bool:
     return is_date(s) or is_time(s) or parse_datetime_line(s) is not None
+
+
+ROUND_DETAIL_RE = re.compile(
+    r"^(kvartsfinal|semifinal|final|attondelsfinal|a?ttondelsfinal|omg[aå]ng)\b",
+    re.IGNORECASE,
+)
+
+
+def is_round_detail_line(s: str) -> bool:
+    return bool(ROUND_DETAIL_RE.match(s.strip()))
+
+
+def parse_match_metadata(lines, i: int) -> tuple[str, str, int]:
+    """
+    Läser metadata-rader efter en matchrad och plockar ut arena + omgångsdetalj.
+    """
+    metadata_lines = []
+    L = len(lines)
+    while i < L and not looks_like_new_match_start(lines[i]) and " - " not in lines[i]:
+        metadata_lines.append(lines[i])
+        i += 1
+        if len(metadata_lines) >= 2:
+            break
+
+    venue = ""
+    round_detail = ""
+    if not metadata_lines:
+        return venue, round_detail, i
+
+    first = metadata_lines[0]
+    second = metadata_lines[1] if len(metadata_lines) > 1 else ""
+
+    if is_round_detail_line(first):
+        round_detail = first
+        venue = second
+    else:
+        venue = first
+        if second and is_round_detail_line(second):
+            round_detail = second
+
+    return venue, round_detail, i
 
 
 def parse_matches_from_lines(lines):
@@ -187,6 +229,7 @@ def parse_matches_from_lines(lines):
             spectators = None
 
             venue = ""
+            round_detail = ""
 
             # -------- Resultat (valfritt) --------
             if i < L and is_score_line(lines[i]):
@@ -209,12 +252,10 @@ def parse_matches_from_lines(lines):
 
                 # -------- Arena --------
                 if i < L and not looks_like_new_match_start(lines[i]):
-                    venue = lines[i]
-                    i += 1
+                    venue, round_detail, i = parse_match_metadata(lines, i)
             elif i < L and not looks_like_new_match_start(lines[i]) and " - " not in lines[i]:
-                # Slutspelsformat: ingen resultatkolumn, nästa rad innehåller omgång/arena.
-                venue = lines[i]
-                i += 1
+                # Slutspelsformat: ingen resultatkolumn, metadata kan vara omgång + arena.
+                venue, round_detail, i = parse_match_metadata(lines, i)
 
             games.append(
                 {
@@ -225,6 +266,7 @@ def parse_matches_from_lines(lines):
                     "home_score": home_score,
                     "away_score": away_score,
                     "venue": venue,
+                    "round_detail": round_detail,
                     "spectators": spectators,
                 }
             )
@@ -555,6 +597,7 @@ async def team_endpoint():
             "home_score": last_game["home_score"],
             "away_score": last_game["away_score"],
             "venue": last_game["venue"],
+            "round_detail": last_game.get("round_detail", ""),
             "home_badge": last_game.get("home_badge"),
             "away_badge": last_game.get("away_badge"),
             "team_result": team_result,
@@ -567,6 +610,7 @@ async def team_endpoint():
             "home_score": next_game["home_score"],
             "away_score": next_game["away_score"],
             "venue": next_game["venue"],
+            "round_detail": next_game.get("round_detail", ""),
             "home_badge": next_game.get("home_badge"),
             "away_badge": next_game.get("away_badge"),
         },

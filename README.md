@@ -94,6 +94,7 @@ Returns the last played match and the next upcoming match for `TEAM_TAG`.
     "home_score": 1,
     "away_score": 2,
     "venue": "Hovet, Johanneshov",
+    "round_detail": "",
     "home_badge": "https://r2.thesportsdb.com/images/media/team/badge123.png",
     "away_badge": "https://r2.thesportsdb.com/images/media/team/badge456.png",
     "team_result": "win"
@@ -106,6 +107,7 @@ Returns the last played match and the next upcoming match for `TEAM_TAG`.
     "home_score": null,
     "away_score": null,
     "venue": "Hägglunds Arena",
+    "round_detail": "Kvartsfinal 2",
     "home_badge": "...",
     "away_badge": "..."
   }
