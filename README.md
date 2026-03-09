@@ -132,6 +132,118 @@ services:
 
 ---
 
+## ☸️ Kubernetes Deployment
+
+### 1. Build and push image
+
+```bash
+docker build -t <registry>/hockey-api:latest .
+docker push <registry>/hockey-api:latest
+```
+
+### 2. Create manifests
+
+Save as `k8s/hockey-api.yaml`:
+
+```yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: hockey
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hockey-api-config
+  namespace: hockey
+data:
+  TEAM_TAG: "modo"
+  SCHEDULE_URLS: "https://stats.swehockey.se/ScheduleAndResults/Schedule/18266,https://stats.swehockey.se/ScheduleAndResults/Schedule/18267"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: hockey-api-secret
+  namespace: hockey
+type: Opaque
+stringData:
+  THESPORTSDB_API_KEY: "YOUR_API_KEY"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hockey-api
+  namespace: hockey
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: hockey-api
+  template:
+    metadata:
+      labels:
+        app: hockey-api
+    spec:
+      containers:
+        - name: hockey-api
+          image: <registry>/hockey-api:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: hockey-api-config
+            - secretRef:
+                name: hockey-api-secret
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 8000
+            initialDelaySeconds: 15
+            periodSeconds: 20
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: hockey-api
+  namespace: hockey
+spec:
+  selector:
+    app: hockey-api
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000
+  type: ClusterIP
+```
+
+### 3. Apply and verify
+
+```bash
+kubectl apply -f k8s/hockey-api.yaml
+kubectl -n hockey rollout status deploy/hockey-api
+kubectl -n hockey get pods,svc
+```
+
+### 4. Test locally via port-forward
+
+```bash
+kubectl -n hockey port-forward svc/hockey-api 8000:8000
+curl http://localhost:8000/team
+```
+
+### Optional: expose through Ingress
+
+If you run an ingress controller (nginx/traefik), add an `Ingress` resource for `hockey-api` on port `8000`.
+
+---
+
 ## 🖥️ Using with Glance Dashboard
 
 Here is a minimal Glance widget example:
