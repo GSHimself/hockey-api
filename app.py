@@ -36,7 +36,10 @@ def parse_schedule_urls() -> list[str]:
 
     schedule_url = os.getenv("SCHEDULE_URL", "").strip()
     if schedule_url:
-        return [schedule_url]
+        parts = re.split(r"[,;\n]+", schedule_url)
+        urls = [p.strip() for p in parts if p.strip()]
+        if urls:
+            return urls
 
     return [DEFAULT_SCHEDULE_URL]
 
@@ -321,11 +324,15 @@ def merge_unique_games(games):
     return list(merged.values())
 
 
-async def fetch_schedule_html(client: httpx.AsyncClient, url: str) -> str | None:
+async def fetch_schedule_html(
+    client: httpx.AsyncClient, url: str
+) -> tuple[str | None, str | None]:
     """
     Hämtar schema-HTML med enkel retry/backoff.
-    Returnerar None vid permanent fel för att möjliggöra partial success.
+    Returnerar (html, error). Vid permanent fel returneras (None, feltext)
+    för att möjliggöra partial success och tydligare felsökning.
     """
+    last_error = None
     for attempt in range(1, SCHEDULE_FETCH_RETRIES + 1):
         try:
             logger.debug(
@@ -337,15 +344,17 @@ async def fetch_schedule_html(client: httpx.AsyncClient, url: str) -> str | None
             response = await client.get(url, headers={"User-Agent": "Mozilla/5.0"})
             response.raise_for_status()
             logger.info("Fetched schedule url=%s status=%s", url, response.status_code)
-            return response.text
+            return response.text, None
         except Exception as e:
+            last_error = f"{type(e).__name__}: {e}"
             if attempt >= SCHEDULE_FETCH_RETRIES:
                 logger.exception(
-                    "Failed to fetch schedule url=%s after %s attempts",
+                    "Failed to fetch schedule url=%s after %s attempts error=%s",
                     url,
                     attempt,
+                    last_error,
                 )
-                return None
+                return None, last_error
             logger.warning(
                 "Fetch failed url=%s attempt=%s/%s error=%s",
                 url,
@@ -354,6 +363,7 @@ async def fetch_schedule_html(client: httpx.AsyncClient, url: str) -> str | None
                 e,
             )
             await asyncio.sleep(SCHEDULE_FETCH_BACKOFF_SECONDS * attempt)
+    return None, last_error
 
 
 def normalize_badge_url(url: str | None) -> str | None:
@@ -442,20 +452,31 @@ async def team_endpoint():
     all_games = []
     timeout = httpx.Timeout(connect=5.0, read=20.0, write=10.0, pool=5.0)
     async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-        html_pages = await asyncio.gather(
+        fetch_results = await asyncio.gather(
             *[fetch_schedule_html(client, url) for url in SCHEDULE_URLS]
         )
 
-    for html in html_pages:
+    fetch_errors = {}
+    for url, (html, error) in zip(SCHEDULE_URLS, fetch_results):
+        if error:
+            fetch_errors[url] = error
         if not html:
             continue
         all_games.extend(parse_games_from_html(html))
 
     if not all_games:
-        logger.error("All schedule URL fetches failed for urls=%s", SCHEDULE_URLS)
+        logger.error(
+            "All schedule URL fetches failed for urls=%s errors=%s",
+            SCHEDULE_URLS,
+            fetch_errors,
+        )
         raise HTTPException(
             status_code=500,
-            detail="Failed to fetch schedule(s): all configured schedule URLs failed",
+            detail={
+                "message": "Failed to fetch schedule(s): all configured schedule URLs failed",
+                "urls": SCHEDULE_URLS,
+                "errors": fetch_errors,
+            },
         )
 
     all_games = merge_unique_games(all_games)
@@ -526,4 +547,16 @@ async def team_endpoint():
             "home_badge": next_game.get("home_badge"),
             "away_badge": next_game.get("away_badge"),
         },
+    }
+
+
+@app.get("/")
+async def root_endpoint():
+    """
+    Enkel health/info endpoint för att undvika 404 på root-path.
+    """
+    return {
+        "status": "ok",
+        "endpoints": ["/team"],
+        "schedule_urls": SCHEDULE_URLS,
     }
