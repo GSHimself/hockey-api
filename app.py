@@ -1,19 +1,48 @@
 import os
 import re
+import asyncio
+from datetime import datetime
 from functools import lru_cache
 from urllib.parse import urlparse, urlunparse
 
 import httpx
 import requests
-from fastapi import FastAPI, HTTPException
 from bs4 import BeautifulSoup
+from fastapi import FastAPI, HTTPException
 
 TEAM_TAG = os.getenv("TEAM_TAG", "modo").lower()
 
 # Swehockey-schema (säsong/serie 2025-2026)
-SCHEDULE_URL = os.getenv(
-    "SCHEDULE_URL",
-    "https://stats.swehockey.se/ScheduleAndResults/Schedule/18266",
+DEFAULT_SCHEDULE_URL = "https://stats.swehockey.se/ScheduleAndResults/Schedule/18266"
+
+
+def parse_schedule_urls() -> list[str]:
+    """
+    Läser en eller flera schema-URL:er från miljövariabler.
+
+    Prioritet:
+      1) SCHEDULE_URLS (kommaseparerad/semikolon/ny rad)
+      2) SCHEDULE_URL (bakåtkompatibel)
+      3) default-URL
+    """
+    schedule_urls_raw = os.getenv("SCHEDULE_URLS", "").strip()
+    if schedule_urls_raw:
+        parts = re.split(r"[,;\n]+", schedule_urls_raw)
+        urls = [p.strip() for p in parts if p.strip()]
+        if urls:
+            return urls
+
+    schedule_url = os.getenv("SCHEDULE_URL", "").strip()
+    if schedule_url:
+        return [schedule_url]
+
+    return [DEFAULT_SCHEDULE_URL]
+
+
+SCHEDULE_URLS = parse_schedule_urls()
+SCHEDULE_FETCH_RETRIES = max(1, int(os.getenv("SCHEDULE_FETCH_RETRIES", "2")))
+SCHEDULE_FETCH_BACKOFF_SECONDS = max(
+    0.0, float(os.getenv("SCHEDULE_FETCH_BACKOFF_SECONDS", "0.5"))
 )
 
 # TheSportsDB
@@ -78,7 +107,7 @@ def parse_matches_from_lines(lines):
 
         if is_time(s) and i + 1 < L and is_time(lines[i + 1]):
             time = s
-            i += 2 
+            i += 2
 
             if i >= L:
                 break
@@ -202,6 +231,77 @@ def guess_team_name(games) -> str:
     return tag
 
 
+def game_datetime_key(game) -> datetime:
+    """
+    Sorteringsnyckel för matcher, med robust fallback vid saknat format.
+    """
+    date = game.get("date") or "9999-12-31"
+    time = game.get("time") or "23:59"
+
+    if not DATE_RE.match(date):
+        date = "9999-12-31"
+    if not TIME_RE.match(time):
+        time = "23:59"
+
+    return datetime.strptime(f"{date} {time}", "%Y-%m-%d %H:%M")
+
+
+def parse_games_from_html(html: str):
+    soup = BeautifulSoup(html, "html.parser")
+    text = soup.get_text("\n").replace("\u00a0", " ")
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    return parse_matches_from_lines(lines)
+
+
+def merge_unique_games(games):
+    """
+    Slår ihop matcher från flera källor och tar bort dubbletter.
+    Om samma match finns flera gånger prioriteras versionen med resultat.
+    """
+    merged = {}
+    for game in games:
+        key = (
+            game.get("date", ""),
+            game.get("time", ""),
+            game.get("home_team", ""),
+            game.get("away_team", ""),
+        )
+        existing = merged.get(key)
+        if not existing:
+            merged[key] = game
+            continue
+
+        existing_has_score = (
+            existing.get("home_score") is not None and existing.get("away_score") is not None
+        )
+        game_has_score = game.get("home_score") is not None and game.get("away_score") is not None
+        if game_has_score and not existing_has_score:
+            merged[key] = game
+            continue
+
+        if len((game.get("venue") or "").strip()) > len((existing.get("venue") or "").strip()):
+            merged[key] = game
+
+    return list(merged.values())
+
+
+async def fetch_schedule_html(client: httpx.AsyncClient, url: str) -> str | None:
+    """
+    Hämtar schema-HTML med enkel retry/backoff.
+    Returnerar None vid permanent fel för att möjliggöra partial success.
+    """
+    for attempt in range(1, SCHEDULE_FETCH_RETRIES + 1):
+        try:
+            response = await client.get(url, headers={"User-Agent": "Mozilla/5.0"})
+            response.raise_for_status()
+            return response.text
+        except Exception as e:
+            if attempt >= SCHEDULE_FETCH_RETRIES:
+                print(f"[Schedule] Failed to fetch {url} after {attempt} attempts: {e}")
+                return None
+            await asyncio.sleep(SCHEDULE_FETCH_BACKOFF_SECONDS * attempt)
+
+
 def normalize_badge_url(url: str | None) -> str | None:
     """
     Fixar badge-URL så att den alltid pekar på r2.thesportsdb.com.
@@ -254,9 +354,9 @@ def get_team_badge(team_name: str) -> str | None:
     return normalize_badge_url(badge)
 
 
-def attach_badges(game):
+async def attach_badges_async(game):
     """
-    Lägger till home_badge och away_badge i game-dict.
+    Async-wrapper som undviker att blockera event loopen vid badge-hämtning.
     """
     if not game:
         return game
@@ -264,8 +364,16 @@ def attach_badges(game):
     home = game.get("home_team") or ""
     away = game.get("away_team") or ""
 
-    game["home_badge"] = get_team_badge(home) if home else None
-    game["away_badge"] = get_team_badge(away) if away else None
+    home_task = asyncio.to_thread(get_team_badge, home) if home else None
+    away_task = asyncio.to_thread(get_team_badge, away) if away else None
+
+    home_badge, away_badge = await asyncio.gather(
+        home_task if home_task else asyncio.sleep(0, result=None),
+        away_task if away_task else asyncio.sleep(0, result=None),
+    )
+
+    game["home_badge"] = home_badge
+    game["away_badge"] = away_badge
     return game
 
 
@@ -273,49 +381,64 @@ def attach_badges(game):
 async def team_endpoint():
     """
     Generisk endpoint: returnerar senaste & nästa match för laget TEAM_TAG.
-    Styrs av miljövariabeln TEAM_TAG och SCHEDULE_URL.
+    Styrs av miljövariabeln TEAM_TAG och SCHEDULE_URL/SCHEDULE_URLS.
     """
-    # 1. Hämta HTML
-    try:
-        async with httpx.AsyncClient(timeout=20.0) as client:
-            r = await client.get(SCHEDULE_URL, headers={"User-Agent": "Mozilla/5.0"})
-            r.raise_for_status()
-            html = r.text
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to fetch schedule: {e}")
+    # 1. Hämta HTML för alla konfigurerade scheman
+    all_games = []
+    timeout = httpx.Timeout(connect=5.0, read=20.0, write=10.0, pool=5.0)
+    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+        html_pages = await asyncio.gather(
+            *[fetch_schedule_html(client, url) for url in SCHEDULE_URLS]
+        )
 
-    # 2. Plocka ut ren text & rader
-    soup = BeautifulSoup(html, "html.parser")
-    text = soup.get_text("\n").replace("\u00a0", " ")
-    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    for html in html_pages:
+        if not html:
+            continue
+        all_games.extend(parse_games_from_html(html))
 
-    # 3. Parsea alla matcher
-    all_games = parse_matches_from_lines(lines)
+    if not all_games:
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to fetch schedule(s): all configured schedule URLs failed",
+        )
 
-    # 4. Filtrera ut matcher för TEAM_TAG
+    all_games = merge_unique_games(all_games)
+
+    # 2. Filtrera ut matcher för TEAM_TAG
     team_games = [g for g in all_games if is_team_game(g)]
+    dated_team_games = sorted(((game_datetime_key(g), g) for g in team_games), key=lambda x: x[0])
 
-    # 5. Dela upp i spelade & kommande
-    played = [g for g in team_games if g["home_score"] is not None]
-    upcoming = [g for g in team_games if g["home_score"] is None]
+    # 3. Dela upp i spelade & kommande
+    now = datetime.now()
+    played = [
+        g
+        for _, g in dated_team_games
+        if g["home_score"] is not None and g["away_score"] is not None
+    ]
+    upcoming = [g for dt, g in dated_team_games if g["home_score"] is None and dt >= now]
+    if not upcoming:
+        upcoming = [g for _, g in dated_team_games if g["home_score"] is None]
 
     last_game = played[-1] if played else empty_game()
     next_game = upcoming[0] if upcoming else empty_game()
 
-    # 6. Loggor
-    last_game = attach_badges(last_game)
-    next_game = attach_badges(next_game)
+    # 4. Loggor
+    last_game, next_game = await asyncio.gather(
+        attach_badges_async(last_game),
+        attach_badges_async(next_game),
+    )
 
-    # 7. Räkna ut resultat ur lagets perspektiv
+    # 5. Räkna ut resultat ur lagets perspektiv
     team_result = compute_team_result(last_game)
 
-    # 8. Gissa ett lagnamn
-    team_name = guess_team_name(team_games)
+    # 6. Gissa ett lagnamn
+    team_name = guess_team_name([g for _, g in dated_team_games])
 
-    # 9. Return
+    # 7. Return
     return {
         "team_tag": TEAM_TAG,
         "team_name": team_name,
+        "schedule_urls": SCHEDULE_URLS,
         "last_game": {
             "date": last_game["date"],
             "time": last_game["time"],

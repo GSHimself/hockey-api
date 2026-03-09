@@ -12,7 +12,7 @@ No code changes are required — everything is configured via environment variab
 
 ## ✨ Features
 
-* Fetches & parses games from a Swehockey schedule URL
+* Fetches & parses games from one or more Swehockey schedule URLs
 * Supports *any* team through a simple environment variable (`TEAM_TAG`)
 * Returns both **last played game** and **next upcoming game**
 * Automatically fetches **team badges/logos** from TheSportsDB
@@ -33,7 +33,7 @@ Run the API for MoDo Hockey:
 docker run -d \
   -p 8000:8000 \
   -e TEAM_TAG="modo" \
-  -e SCHEDULE_URL="https://stats.swehockey.se/ScheduleAndResults/Schedule/18266" \
+  -e SCHEDULE_URLS="https://stats.swehockey.se/ScheduleAndResults/Schedule/18266,https://stats.swehockey.se/ScheduleAndResults/Schedule/18267" \
   -e THESPORTSDB_API_KEY="YOUR_API_KEY" \
   hockey-api:latest
 ```
@@ -53,7 +53,8 @@ The service is configured entirely with environment variables:
 | Variable              | Required | Description                                            | Example                      |
 | --------------------- | -------- | ------------------------------------------------------ | ---------------------------- |
 | `TEAM_TAG`            | Yes      | Substring used to identify the team (case-insensitive) | `modo`, `aik`, `björklöven`  |
-| `SCHEDULE_URL`        | Yes      | Swehockey schedule URL for your league/season          | `https://.../Schedule/18266` |
+| `SCHEDULE_URLS`       | Recommended | One or more Swehockey schedule URLs (comma/semicolon/newline separated) | `https://.../Schedule/18266,https://.../Schedule/18267` |
+| `SCHEDULE_URL`        | Optional | Backward-compatible single schedule URL                | `https://.../Schedule/18266` |
 | `THESPORTSDB_API_KEY` | Optional | API key for badge/logo fetching                        | `123` (free tier)            |
 
 ### How TEAM_TAG works
@@ -81,6 +82,10 @@ Returns the last played match and the next upcoming match for `TEAM_TAG`.
 {
   "team_tag": "modo",
   "team_name": "MoDo Hockey",
+  "schedule_urls": [
+    "https://stats.swehockey.se/ScheduleAndResults/Schedule/18266",
+    "https://stats.swehockey.se/ScheduleAndResults/Schedule/18267"
+  ],
   "last_game": {
     "date": "2025-11-26",
     "time": "19:00",
@@ -117,7 +122,7 @@ services:
     image: hockey-api:latest
     environment:
       TEAM_TAG: "MoDo"
-      SCHEDULE_URL: "https://stats.swehockey.se/ScheduleAndResults/Schedule/18266"
+      SCHEDULE_URLS: "https://stats.swehockey.se/ScheduleAndResults/Schedule/18266,https://stats.swehockey.se/ScheduleAndResults/Schedule/18267"
       THESPORTSDB_API_KEY: "YOUR_API_KEY"
     ports:
       - "8000:8000"
