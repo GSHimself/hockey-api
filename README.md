@@ -1,7 +1,14 @@
 # 🏒 Hockey Schedule API
 
 A small FastAPI microservice that fetches hockey schedules from **stats.swehockey.se**, parses the raw HTML, and exposes a clean JSON API for a specific team.
-Designed for dashboards like **Glance**, home-lab widgets, or automation setups.
+Primarily designed to run as a Kubernetes pod so **Glance** dashboard instances can reach it via internal cluster DNS:
+
+```yaml
+- type: custom-api
+  title: Hockey – Matches
+  cache: 30m
+  url: http://hockey-api:8000/team
+```
 
 The API supports **any team**, based on a configurable substring (e.g., `"modo"`, `"aik"`, `"björklöven"`).
 No code changes are required — everything is configured via environment variables.
@@ -136,10 +143,14 @@ services:
 
 ### 1. Build and push image
 
+The Docker image is built and pushed automatically to GHCR via GitHub Actions when a version tag is pushed:
+
 ```bash
-docker build -t <registry>/hockey-api:latest .
-docker push <registry>/hockey-api:latest
+git tag v1.x.x
+git push --tags
 ```
+
+Once the Action completes, update the image tag in your k8s manifest and apply it manually on your cluster.
 
 ### 2. Create manifests
 
@@ -261,17 +272,14 @@ You can customize it with logos, score colors, etc.
 
 ## 🏗️ Development
 
-Install dependencies:
+Make code changes locally, then push a version tag to GitHub to trigger a build:
 
 ```bash
-pip install -r requirements.txt
+git tag v1.x.x
+git push --tags
 ```
 
-Run locally:
-
-```bash
-uvicorn app:app --reload --host 0.0.0.0 --port 8000
-```
+GitHub Actions will build and push the Docker image to GHCR. From there, update the image tag in your k8s manifest and apply it manually on your cluster to test.
 
 ---
 

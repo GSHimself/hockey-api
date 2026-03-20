@@ -254,8 +254,22 @@ def parse_matches_from_lines(lines):
                 if i < L and not looks_like_new_match_start(lines[i]):
                     venue, round_detail, i = parse_match_metadata(lines, i)
             elif i < L and not looks_like_new_match_start(lines[i]) and " - " not in lines[i]:
-                # Slutspelsformat: ingen resultatkolumn, metadata kan vara omgång + arena.
+                # Slutspelsformat: runda/arena kan komma före eller utan resultat.
                 venue, round_detail, i = parse_match_metadata(lines, i)
+
+                # Spelade slutspelsmatcher har resultatet efter metadata.
+                if i < L and is_score_line(lines[i]):
+                    result_line = lines[i]
+                    i += 1
+                    m = SCORE_RE.match(result_line)
+                    if m:
+                        home_score = int(m.group(1))
+                        away_score = int(m.group(2))
+                    if i < L and lines[i].startswith("("):
+                        i += 1
+                    if i < L and lines[i].isdigit():
+                        spectators = int(lines[i])
+                        i += 1
 
             games.append(
                 {
