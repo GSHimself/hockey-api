@@ -397,21 +397,6 @@ Adapt the title, labels, and links to match your own team.
 
 ---
 
-## 🏗️ Development
-
-After making code changes, push a version tag to trigger the GitHub Actions build:
-
-```bash
-git tag v1.x.x
-git push --tags
-```
-
-GitHub Actions builds and pushes the image to `ghcr.io/gshimself/hockey-api` with both a version tag and `latest`. Update the image tag in your k8s manifest and apply it on your cluster to test.
-
-There is no local test setup — deploy to k8s to verify changes.
-
----
-
 ## 🤝 Contributing
 
 Pull requests and issues are welcome!
