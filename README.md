@@ -1,5 +1,7 @@
 # 🏒 Hockey Schedule API
 
+[![Publish Docker image](https://github.com/GSHimself/hockey-api/actions/workflows/docker-publish.yml/badge.svg)](https://github.com/GSHimself/hockey-api/actions/workflows/docker-publish.yml)
+
 A small FastAPI microservice that fetches hockey schedules from **stats.swehockey.se**, parses the raw HTML, and exposes a clean JSON API for a specific team.
 Designed to be lightweight and stateless — run it in Docker, Kubernetes, or k3s.
 Works great as a backend for **Glance** dashboards, Home Assistant, or any custom UI.
