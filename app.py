@@ -501,8 +501,9 @@ def get_team_badge(team_name: str) -> str | None:
             query,
             [(t.get("strTeam"), t.get("strSport")) for t in teams[:3]],
         )
-    candidates = hockey_teams if hockey_teams else teams
-    team = candidates[0]
+    if not hockey_teams:
+        return None
+    team = hockey_teams[0]
 
     logger.info(
         "Badge lookup team=%s query=%s matched=%s sport=%s",
