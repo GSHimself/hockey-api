@@ -490,9 +490,21 @@ def get_team_badge(team_name: str) -> str | None:
 
     teams = data.get("teams") or []
     if not teams:
+        logger.debug("No badge results for team=%s query=%s", team_name, query)
         return None
 
-    team = teams[0]
+    hockey_teams = [t for t in teams if "hockey" in (t.get("strSport") or "").lower()]
+    candidates = hockey_teams if hockey_teams else teams
+    team = candidates[0]
+
+    logger.debug(
+        "Badge lookup team=%s query=%s matched=%s sport=%s",
+        team_name,
+        query,
+        team.get("strTeam"),
+        team.get("strSport"),
+    )
+
     badge = team.get("strBadge") or team.get("strTeamBadge")
     return normalize_badge_url(badge)
 
