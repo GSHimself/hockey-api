@@ -366,7 +366,7 @@ def game_datetime_key(game) -> datetime:
 
 def parse_games_from_html(html: str):
     soup = BeautifulSoup(html, "html.parser")
-    text = soup.get_text("\n").replace("\u00a0", " ")
+    text = soup.get_text("\n").replace(" ", " ")
     lines = [l.strip() for l in text.splitlines() if l.strip()]
     return parse_matches_from_lines(lines)
 
@@ -490,29 +490,9 @@ def get_team_badge(team_name: str) -> str | None:
 
     teams = data.get("teams") or []
     if not teams:
-        logger.debug("No badge results for team=%s query=%s", team_name, query)
         return None
 
-    hockey_teams = [t for t in teams if "hockey" in (t.get("strSport") or "").lower()]
-    if not hockey_teams:
-        logger.warning(
-            "No ice hockey teams found for team=%s query=%s results=%s",
-            team_name,
-            query,
-            [(t.get("strTeam"), t.get("strSport")) for t in teams[:3]],
-        )
-    if not hockey_teams:
-        return None
-    team = hockey_teams[0]
-
-    logger.info(
-        "Badge lookup team=%s query=%s matched=%s sport=%s",
-        team_name,
-        query,
-        team.get("strTeam"),
-        team.get("strSport"),
-    )
-
+    team = teams[0]
     badge = team.get("strBadge") or team.get("strTeamBadge")
     return normalize_badge_url(badge)
 
@@ -538,6 +518,23 @@ async def attach_badges_async(game):
     game["home_badge"] = home_badge
     game["away_badge"] = away_badge
     return game
+
+
+def last_game_too_old(game, now: datetime) -> bool:
+    """
+    True om senaste matchen spelades för mer än 1 månad sedan.
+    Används för att dölja last_game när säsongen är slut.
+    """
+    date_str = game.get("date")
+    if not date_str or not DATE_RE.match(date_str):
+        return False
+    try:
+        game_dt = datetime.strptime(date_str, "%Y-%m-%d")
+    except ValueError:
+        return False
+    delta = now - game_dt
+    # 31 dagar som approximation för "1 månad"
+    return delta.days > 31
 
 
 @app.get("/team")
@@ -600,7 +597,14 @@ async def team_endpoint():
     last_game = played[-1] if played else empty_game()
     next_game = upcoming[0] if upcoming else empty_game()
 
-    # 4. Loggor
+    # Om senaste matchen är äldre än 1 månad visas den inte (säsongen är förmodligen slut)
+    if last_game_too_old(last_game, now):
+        logger.info(
+            "last_game date=%s is older than 1 month, hiding it", last_game.get("date")
+        )
+        last_game = empty_game()
+
+    # 4. Hämta badges
     last_game, next_game = await asyncio.gather(
         attach_badges_async(last_game),
         attach_badges_async(next_game),
