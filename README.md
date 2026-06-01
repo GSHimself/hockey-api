@@ -35,6 +35,7 @@ docker run -d \
   -e TEAM_TAG="modo" \
   -e SCHEDULE_URLS="https://stats.swehockey.se/ScheduleAndResults/Schedule/18266,https://stats.swehockey.se/ScheduleAndResults/Schedule/18267" \
   -e THESPORTSDB_API_KEY="YOUR_API_KEY" \
+  -e TEAM_NAME_OVERRIDES="MoDo Hockey=Modo" \
   ghcr.io/gshimself/hockey-api:latest
 ```
 
@@ -52,12 +53,13 @@ Schedule URLs are found on [stats.swehockey.se](https://stats.swehockey.se) — 
 
 The service is configured entirely with environment variables:
 
-| Variable              | Required    | Description                                                             | Example                                                 |
-| --------------------- | ----------- | ----------------------------------------------------------------------- | ------------------------------------------------------- |
-| `TEAM_TAG`            | Yes         | Substring used to identify the team (case-insensitive)                  | `modo`, `aik`, `björklöven`                             |
-| `SCHEDULE_URLS`       | Recommended | One or more Swehockey schedule URLs (comma/semicolon/newline separated) | `https://.../Schedule/18266,https://.../Schedule/18267` |
-| `SCHEDULE_URL`        | Optional    | Backward-compatible single schedule URL                                 | `https://.../Schedule/18266`                            |
-| `THESPORTSDB_API_KEY` | Optional    | API key for badge/logo fetching                                         | `123` (free tier)                                       |
+| Variable               | Required    | Description                                                             | Example                                                 |
+| ---------------------- | ----------- | ----------------------------------------------------------------------- | ------------------------------------------------------- |
+| `TEAM_TAG`             | Yes         | Substring used to identify the team (case-insensitive)                  | `modo`, `aik`, `björklöven`                             |
+| `SCHEDULE_URLS`        | Recommended | One or more Swehockey schedule URLs (comma/semicolon/newline separated) | `https://.../Schedule/18266,https://.../Schedule/18267` |
+| `SCHEDULE_URL`         | Optional    | Backward-compatible single schedule URL                                 | `https://.../Schedule/18266`                            |
+| `THESPORTSDB_API_KEY`  | Optional    | API key for badge/logo fetching                                         | `123` (free tier)                                       |
+| `TEAM_NAME_OVERRIDES`  | Optional    | Override the search term sent to TheSportsDB per team name. Useful when the exact Swehockey name doesn't match TheSportsDB. Comma-separated `Original=SearchTerm` pairs (case-insensitive on the original name). | `MoDo Hockey=Modo,Djurgårdens IF=Djurgarden`            |
 
 ### How TEAM_TAG works
 
@@ -143,6 +145,7 @@ services:
       TEAM_TAG: "modo"
       SCHEDULE_URLS: "https://stats.swehockey.se/ScheduleAndResults/Schedule/18266,https://stats.swehockey.se/ScheduleAndResults/Schedule/18267"
       THESPORTSDB_API_KEY: "YOUR_API_KEY"
+      TEAM_NAME_OVERRIDES: "MoDo Hockey=Modo"
     ports:
       - "8000:8000"
 ```
@@ -173,6 +176,7 @@ metadata:
 data:
   TEAM_TAG: "modo"
   SCHEDULE_URLS: "https://stats.swehockey.se/ScheduleAndResults/Schedule/18266,https://stats.swehockey.se/ScheduleAndResults/Schedule/18267"
+  TEAM_NAME_OVERRIDES: "MoDo Hockey=Modo"
 ---
 apiVersion: v1
 kind: Secret

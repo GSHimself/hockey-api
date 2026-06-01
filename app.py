@@ -8,7 +8,6 @@ from functools import lru_cache
 from urllib.parse import urlparse, urlunparse
 
 import httpx
-import requests
 from bs4 import BeautifulSoup
 from fastapi import FastAPI, HTTPException, Request
 
@@ -53,6 +52,31 @@ SCHEDULE_FETCH_BACKOFF_SECONDS = max(
 # TheSportsDB
 THESPORTSDB_API_KEY = os.getenv("THESPORTSDB_API_KEY", "123")
 THESPORTSDB_BASE = "https://www.thesportsdb.com/api/v1/json"
+
+
+def _parse_team_name_overrides() -> dict[str, str]:
+    """
+    Läser TEAM_NAME_OVERRIDES från miljövariabeln och returnerar en dict.
+
+    Format: kommaseparerade par "Originalnamn=Sökterm", t.ex.:
+      TEAM_NAME_OVERRIDES="MoDo Hockey=Modo,Djurgårdens IF=Djurgarden"
+    """
+    raw = os.getenv("TEAM_NAME_OVERRIDES", "").strip()
+    overrides: dict[str, str] = {}
+    if not raw:
+        return overrides
+    for pair in re.split(r"[,;\n]+", raw):
+        pair = pair.strip()
+        if "=" in pair:
+            original, _, replacement = pair.partition("=")
+            original = original.strip()
+            replacement = replacement.strip()
+            if original and replacement:
+                overrides[original.lower()] = replacement
+    return overrides
+
+
+TEAM_NAME_OVERRIDES: dict[str, str] = _parse_team_name_overrides()
 
 app = FastAPI()
 
@@ -471,17 +495,19 @@ def normalize_badge_url(url: str | None) -> str | None:
 def get_team_badge(team_name: str) -> str | None:
     """
     Hämtar lagets logga (badge) från TheSportsDB och cachar resultatet.
+
+    Sökterm kan åsidosättas via TEAM_NAME_OVERRIDES (case-insensitive på originalnamnet).
     """
     if not team_name:
         return None
 
-    query = team_name
-    if "modo" in team_name.lower():
-        query = "Modo"
+    query = TEAM_NAME_OVERRIDES.get(team_name.lower(), team_name)
+    logger.debug("Fetching badge for team=%s query=%s", team_name, query)
 
     url = f"{THESPORTSDB_BASE}/{THESPORTSDB_API_KEY}/searchteams.php"
     try:
-        resp = requests.get(url, params={"t": query}, timeout=10)
+        with httpx.Client(timeout=10) as client:
+            resp = client.get(url, params={"t": query})
         resp.raise_for_status()
         data = resp.json()
     except Exception:
