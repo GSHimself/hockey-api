@@ -33,7 +33,7 @@ Run the API for MoDo Hockey:
 docker run -d \
   -p 8000:8000 \
   -e TEAM_TAG="modo" \
-  -e SCHEDULE_URLS="https://stats.swehockey.se/ScheduleAndResults/Schedule/18266,https://stats.swehockey.se/ScheduleAndResults/Schedule/18267" \
+  -e SCHEDULE_URLS="https://stats.swehockey.se/ScheduleAndResults/Schedule/20962,https://stats.swehockey.se/ScheduleAndResults/Schedule/18267" \
   -e THESPORTSDB_API_KEY="YOUR_API_KEY" \
   -e TEAM_NAME_OVERRIDES="MoDo Hockey=Modo" \
   ghcr.io/gshimself/hockey-api:latest
