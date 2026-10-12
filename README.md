@@ -1,85 +1,94 @@
 # 🏒 Hockey Schedule API
 
-A small FastAPI microservice that fetches hockey schedules from **stats.swehockey.se**, parses the raw HTML, and exposes a clean JSON API for a specific team.
-Designed to be lightweight and stateless — run it in Docker, Kubernetes, or k3s.
-Works great as a backend for **Glance** dashboards, Home Assistant, or any custom UI.
+A small, self-hosted API that tells you **your team's last result and next game**, with team logos.
 
-The API supports **any team**, based on a configurable substring (e.g., `"modo"`, `"aik"`, `"björklöven"`).
-No code changes required — everything is configured via environment variables.
+It reads the public schedule pages on [stats.swehockey.se](https://stats.swehockey.se) (SHL, HockeyAllsvenskan, SDHL, Hockeyettan and more), picks out the games for the team you choose, and returns them as simple JSON. It was built as a backend for a [Glance](https://github.com/glanceapp/glance) dashboard widget, but works with anything that can read JSON (Home Assistant, scripts, your own UI).
 
-![exampleIMg](./example/example.jpeg)
+![Example Glance widget](./example/example.jpeg)
 
----
-
-## ✨ Features
-
-* Fetches & parses games from one or more Swehockey schedule URLs
-* Supports *any* team through a simple environment variable (`TEAM_TAG`)
-* Returns both **last played game** and **next upcoming game**
-* Automatically fetches **team badges/logos** from TheSportsDB
-* Computes match result from your team's perspective: `"win"`, `"loss"`, or `"draw"`
-* Lightweight, fast, cache-friendly
-* Stateless — easy to deploy in Docker, Kubernetes, or k3s
+* Works for **any team** in any league listed on Swehockey, configured with environment variables only
+* Returns the **last played game** (with win/loss/draw from your team's point of view) and the **next game**
+* Adds **team logos** from [TheSportsDB](https://www.thesportsdb.com)
+* Combines several schedules, e.g. regular season + playoffs
+* Ready-made image: `ghcr.io/gshimself/hockey-api:latest`, runs as non-root
 
 ---
 
-## 🚀 Quick Start (Docker)
+## 🚀 Getting started
 
-The image is published to GitHub Container Registry and requires no authentication to pull.
+### 1. Find your schedule URL(s)
 
-Run the API for MoDo Hockey:
+1. Go to [stats.swehockey.se](https://stats.swehockey.se) and open the league your team plays in.
+2. Open the **Schedule** (Spelschema) page for the current season.
+3. Copy the URL. It looks like `https://stats.swehockey.se/ScheduleAndResults/Schedule/20962`.
+
+Regular season and playoffs/qualifiers are usually separate schedules. Add all of them, separated by commas, and the API merges them.
+
+> Schedule IDs change every season, so update the URLs when a new season starts.
+
+### 2. Choose your team tag
+
+`TEAM_TAG` is any part of your team's name as written on Swehockey (case-insensitive). A game is included if the tag appears in either team's name.
+
+| `TEAM_TAG` | Matches                          |
+| ---------- | -------------------------------- |
+| `modo`     | "MoDo Hockey", "MODO Hockey Dam" |
+| `löven`    | "IF Björklöven"                  |
+| `aik`      | "AIK", "AIK Hockey"              |
+
+Make the tag specific enough to only match your team.
+
+### 3. Run it
 
 ```bash
-docker run -d \
+docker run -d --name hockey-api \
   -p 8000:8000 \
   -e TEAM_TAG="modo" \
   -e SCHEDULE_URLS="https://stats.swehockey.se/ScheduleAndResults/Schedule/20962,https://stats.swehockey.se/ScheduleAndResults/Schedule/18267" \
-  -e THESPORTSDB_API_KEY="YOUR_API_KEY" \
-  -e TEAM_NAME_OVERRIDES="MoDo Hockey=Modo" \
   ghcr.io/gshimself/hockey-api:latest
 ```
 
-Then open:
+Open <http://localhost:8000/team>. You should see your team's last and next game. If logos are missing, see [Team logos](#-team-logos).
 
-```
-http://localhost:8000/team
-```
-
-Schedule URLs are found on [stats.swehockey.se](https://stats.swehockey.se) — navigate to your league's schedule page and copy the URL.
+For Docker Compose and Kubernetes, see [Deployment](#-deployment).
 
 ---
 
 ## ⚙️ Configuration
 
-The service is configured entirely with environment variables:
+Everything is configured with environment variables.
 
-| Variable               | Required    | Description                                                             | Example                                                 |
-| ---------------------- | ----------- | ----------------------------------------------------------------------- | ------------------------------------------------------- |
-| `TEAM_TAG`             | Yes         | Substring used to identify the team (case-insensitive)                  | `modo`, `aik`, `björklöven`                             |
-| `SCHEDULE_URLS`        | Recommended | One or more Swehockey schedule URLs (comma/semicolon/newline separated) | `https://.../Schedule/20962,https://.../Schedule/18267` |
-| `SCHEDULE_URL`         | Optional    | Backward-compatible single schedule URL                                 | `https://.../Schedule/20962`                            |
-| `THESPORTSDB_API_KEY`  | Optional    | API key for badge/logo fetching                                         | `123` (free tier)                                       |
-| `TEAM_NAME_OVERRIDES`  | Optional    | Override the search term sent to TheSportsDB per team name. Useful when the exact Swehockey name doesn't match TheSportsDB. Comma-separated `Original=SearchTerm` pairs (case-insensitive on the original name). | `MoDo Hockey=Modo,Djurgårdens IF=Djurgarden`            |
-
-### How TEAM_TAG works
-
-The API matches all games where `TEAM_TAG` appears in either team name.
-
-| TEAM_TAG | Matches                          |
-| -------- | -------------------------------- |
-| `modo`   | "MoDo Hockey", "MODO Hockey Dam" |
-| `löven`  | "IF Björklöven"                  |
-| `aik`    | "AIK", "AIK Hockey"              |
+| Variable | Default | Description |
+| --- | --- | --- |
+| `TEAM_TAG` | `modo` | Part of your team's name, case-insensitive. See [step 2](#2-choose-your-team-tag). |
+| `SCHEDULE_URLS` | an SHL 2025/26 schedule | One or more Swehockey schedule URLs, separated by comma, semicolon or newline. **Set this.** |
+| `SCHEDULE_URL` | – | Older name for `SCHEDULE_URLS`, still supported. Ignored if `SCHEDULE_URLS` is set. |
+| `TEAM_NAME_OVERRIDES` | – | Fix logo lookups, e.g. `MoDo Hockey=Modo,Djurgårdens IF=Djurgarden`. See [Team logos](#-team-logos). |
+| `THESPORTSDB_API_KEY` | `123` | TheSportsDB API key. The free key `123` works; set your own if you have one. |
+| `SCHEDULE_CACHE_SECONDS` | `300` | How long fetched schedules are kept in memory. `0` fetches on every request. |
+| `SCHEDULE_FETCH_RETRIES` | `2` | Attempts per schedule URL before giving up. |
+| `SCHEDULE_FETCH_BACKOFF_SECONDS` | `0.5` | Wait between attempts (grows with each attempt). |
+| `LOG_LEVEL` | `INFO` | Set to `DEBUG` to see which team TheSportsDB matched for each logo. |
 
 ---
 
-## 📡 API Endpoints
+## 🖼️ Team logos
+
+Logos are looked up on TheSportsDB by the team name from Swehockey, and the first search hit is used. Usually this just works. When it doesn't (no logo, or the wrong team's logo), map the Swehockey name to a search term that TheSportsDB finds:
+
+```
+TEAM_NAME_OVERRIDES="MoDo Hockey=Modo,Djurgårdens IF=Djurgarden"
+```
+
+The left side is the name exactly as Swehockey writes it (case-insensitive). The right side is what is sent to TheSportsDB. You can test a search term in the browser: `https://www.thesportsdb.com/api/v1/json/123/searchteams.php?t=Modo`.
+
+Logos found are remembered until the container restarts. Failed lookups (e.g. TheSportsDB being down) are retried on the next request.
+
+---
+
+## 📡 API
 
 ### `GET /team`
-
-Returns the last played match and the next upcoming match for `TEAM_TAG`.
-
-#### Example JSON output
 
 ```json
 {
@@ -89,6 +98,7 @@ Returns the last played match and the next upcoming match for `TEAM_TAG`.
     "https://stats.swehockey.se/ScheduleAndResults/Schedule/20962",
     "https://stats.swehockey.se/ScheduleAndResults/Schedule/18267"
   ],
+  "warnings": [],
   "last_game": {
     "date": "2025-11-26",
     "time": "19:00",
@@ -98,43 +108,51 @@ Returns the last played match and the next upcoming match for `TEAM_TAG`.
     "away_score": 2,
     "venue": "Hovet, Johanneshov",
     "round_detail": "",
-    "home_badge": "https://r2.thesportsdb.com/images/media/team/badge123.png",
-    "away_badge": "https://r2.thesportsdb.com/images/media/team/badge456.png",
+    "home_badge": "https://r2.thesportsdb.com/images/media/team/badge/aik.png",
+    "away_badge": "https://r2.thesportsdb.com/images/media/team/badge/modo.png",
     "team_result": "win"
   },
   "next_game": {
     "date": "2025-11-28",
-    "time": "20:30",
+    "time": "19:00",
     "home_team": "MoDo Hockey",
     "away_team": "IF Björklöven",
     "home_score": null,
     "away_score": null,
     "venue": "Hägglunds Arena",
-    "round_detail": "Quarter-final 2",
-    "home_badge": "...",
-    "away_badge": "..."
+    "round_detail": "",
+    "home_badge": "https://r2.thesportsdb.com/images/media/team/badge/modo.png",
+    "away_badge": "https://r2.thesportsdb.com/images/media/team/badge/bjorkloven.png"
   }
 }
 ```
 
+| Field | Description |
+| --- | --- |
+| `team_name` | Your team's full name as written on Swehockey (falls back to `team_tag`). |
+| `warnings` | Normally empty. Lists schedule URLs that could not be fetched, or notes that an older cached schedule is being shown. |
+| `date`, `time` | Swedish local time, `YYYY-MM-DD` and `HH:MM`. |
+| `home_score`, `away_score` | `null` for games not played yet. |
+| `round_detail` | Playoff round as written by Swehockey (e.g. `Kvartsfinal 2`), otherwise empty. |
+| `home_badge`, `away_badge` | Logo URLs, or `null` if no logo was found. |
+| `team_result` | Only on `last_game`: `win`, `loss` or `draw` for your team. |
+
+**When there is no game to show**, the game object has empty strings and `null` values (check `date == ""`). This happens:
+
+* for `last_game` when the most recent game is more than 31 days old, so last season's result isn't shown all summer;
+* for `next_game` when the schedule has no unplayed games.
+
+**Errors:** if none of the schedule URLs can be fetched and nothing is cached, the API returns HTTP `500` with the URLs and error messages. If at least one URL works, you get a normal response plus `warnings`.
+
+### `GET /`
+
+Health check. Returns `{"status": "ok", ...}`. Use it for liveness/readiness probes.
+
 ---
 
-## 🧩 How It Works
+## 📦 Deployment
 
-1. Fetches Swehockey schedule HTML from all configured `SCHEDULE_URLS` in parallel
-2. Parses HTML with BeautifulSoup into structured game records (date, time, teams, scores, venue)
-3. Merges duplicate games across multiple URL sources
-4. Filters games by `TEAM_TAG` (case-insensitive substring match)
-5. Identifies `last_game` (most recent played) and `next_game` (next upcoming)
-6. Fetches team badges from TheSportsDB concurrently (LRU-cached per process lifetime)
-7. Computes `team_result` from the filtered team's perspective
-8. Returns clean JSON
-
----
-
-## 📦 Docker Compose
-
-Save as `docker-compose.yml` and run `docker compose up -d`:
+### Docker Compose
 
 ```yaml
 services:
@@ -144,23 +162,16 @@ services:
     environment:
       TEAM_TAG: "modo"
       SCHEDULE_URLS: "https://stats.swehockey.se/ScheduleAndResults/Schedule/20962,https://stats.swehockey.se/ScheduleAndResults/Schedule/18267"
-      THESPORTSDB_API_KEY: "YOUR_API_KEY"
       TEAM_NAME_OVERRIDES: "MoDo Hockey=Modo"
     ports:
       - "8000:8000"
 ```
 
-Then open `http://localhost:8000/team`.
+Run `docker compose up -d` and open <http://localhost:8000/team>.
 
----
+### Kubernetes
 
-## ☸️ Kubernetes Deployment
-
-The image is pulled directly from GHCR — no build step required.
-
-### 1. Create manifest
-
-Save as `k8s/hockey-api.yaml`:
+Save as `k8s/hockey-api.yaml`. The same manifest works with GitOps tools like Argo CD or Flux. Commit it to the repo they sync from.
 
 ```yaml
 apiVersion: v1
@@ -177,15 +188,6 @@ data:
   TEAM_TAG: "modo"
   SCHEDULE_URLS: "https://stats.swehockey.se/ScheduleAndResults/Schedule/20962,https://stats.swehockey.se/ScheduleAndResults/Schedule/18267"
   TEAM_NAME_OVERRIDES: "MoDo Hockey=Modo"
----
-apiVersion: v1
-kind: Secret
-metadata:
-  name: hockey-api-secret
-  namespace: hockey
-type: Opaque
-stringData:
-  THESPORTSDB_API_KEY: "YOUR_API_KEY"
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -208,11 +210,15 @@ spec:
           imagePullPolicy: Always
           ports:
             - containerPort: 8000
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
           envFrom:
             - configMapRef:
                 name: hockey-api-config
-            - secretRef:
-                name: hockey-api-secret
           readinessProbe:
             httpGet:
               path: /
@@ -241,35 +247,26 @@ spec:
   type: ClusterIP
 ```
 
-### 2. Apply and verify
+If you use your own TheSportsDB key, put it in a Secret and add it to the container with `secretRef` under `envFrom`.
 
 ```bash
 kubectl apply -f k8s/hockey-api.yaml
 kubectl -n hockey rollout status deploy/hockey-api
-kubectl -n hockey get pods,svc
-```
 
-### 3. Test via port-forward
-
-```bash
+# Test it
 kubectl -n hockey port-forward svc/hockey-api 8000:8000
 curl http://localhost:8000/team
 ```
 
-Once running, other pods in the cluster can reach the API at `http://hockey-api.hockey.svc.cluster.local:8000` (or simply `http://hockey-api:8000` from within the same namespace).
+Inside the cluster the API is reachable at `http://hockey-api.hockey.svc.cluster.local:8000`, or `http://hockey-api:8000` from the same namespace. To reach it from outside, add an Ingress for the `hockey-api` service on port `8000`.
 
-### Optional: expose through Ingress
-
-If you run an ingress controller (nginx/traefik), add an `Ingress` resource for `hockey-api` on port `8000`.
+To pick up a new `latest` image: `kubectl -n hockey rollout restart deployment/hockey-api`. To control upgrades yourself, use a version tag instead, e.g. `ghcr.io/gshimself/hockey-api:v1.2.0`.
 
 ---
 
-## 🖥️ Using with Glance Dashboard
+## 🖥️ Glance widget
 
-Below is a full Glance widget example with team logos and colour-coded scores.
-This example uses internal Kubernetes cluster DNS (`http://hockey-api:8000`); adjust the URL if you run the service differently (e.g., `http://localhost:8000`).
-
-Adapt the title, labels, and links to match your own team.
+A complete [Glance](https://github.com/glanceapp/glance) `custom-api` widget with logos and colour-coded results. Change `url` to wherever the API runs (e.g. `http://localhost:8000/team`), and adapt the title and the link at the bottom to your team.
 
 ```yaml
 - type: custom-api
@@ -401,22 +398,33 @@ Adapt the title, labels, and links to match your own team.
 
 ---
 
-## 🤝 Contributing
+## 🔧 Troubleshooting
 
-Pull requests and issues are welcome!
-Ideas for improvements include:
+| Problem | What to do |
+| --- | --- |
+| `last_game` / `next_game` is empty | Check that `TEAM_TAG` matches the team name on Swehockey, and that `SCHEDULE_URLS` points to the **current** season. |
+| Games from another team show up | Make `TEAM_TAG` more specific. |
+| Missing or wrong logo | Add a `TEAM_NAME_OVERRIDES` entry. Set `LOG_LEVEL=DEBUG` to see what TheSportsDB matched. |
+| HTTP 500 | No schedule URL could be fetched. The response and the logs show the error per URL. |
+| `warnings` in the response | One of the schedule URLs is failing. The rest of the data is still valid. |
 
-* Better parser for irregular Swehockey formats
-* Multi-team support (`/team/{tag}`)
-* Caching layer
-* Tests
-* Logo provider fallbacks
-* Automatic schedule discovery
+---
+
+## 🛠️ Development
+
+The whole service is a single file, `app.py` (FastAPI + BeautifulSoup + httpx).
+
+```bash
+pip install -r requirements-dev.txt
+pytest
+```
+
+Tests run in GitHub Actions on every push and pull request. Pushing a `v*` tag runs the tests and, if they pass, builds and publishes the image to `ghcr.io/gshimself/hockey-api` as both `latest` and the tag name.
+
+Pull requests and issues are welcome. Ideas: multi-team support (`/team/{tag}`), logo provider fallbacks, automatic schedule discovery.
 
 ---
 
 ## 📄 License
 
-MIT License – you are free to use, modify and distribute.
-
----
+MIT. You are free to use, modify and distribute.

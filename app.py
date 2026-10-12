@@ -4,6 +4,7 @@ import asyncio
 import logging
 import time
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from functools import lru_cache
 from urllib.parse import urlparse, urlunparse
 
@@ -48,6 +49,10 @@ SCHEDULE_FETCH_RETRIES = max(1, int(os.getenv("SCHEDULE_FETCH_RETRIES", "2")))
 SCHEDULE_FETCH_BACKOFF_SECONDS = max(
     0.0, float(os.getenv("SCHEDULE_FETCH_BACKOFF_SECONDS", "0.5"))
 )
+SCHEDULE_CACHE_SECONDS = max(0.0, float(os.getenv("SCHEDULE_CACHE_SECONDS", "300")))
+
+# Swehockey anger matchtider i svensk tid, oberoende av podens tidszon
+SWEDEN_TZ = ZoneInfo("Europe/Stockholm")
 
 # TheSportsDB
 THESPORTSDB_API_KEY = os.getenv("THESPORTSDB_API_KEY", "123")
@@ -157,7 +162,7 @@ def looks_like_new_match_start(s: str) -> bool:
 
 
 ROUND_DETAIL_RE = re.compile(
-    r"^(kvartsfinal|semifinal|final|attondelsfinal|a?ttondelsfinal|omg[aå]ng)\b",
+    r"^(kvartsfinal|semifinal|final|a?ttondelsfinal|omg[aå]ng)\b",
     re.IGNORECASE,
 )
 
@@ -197,6 +202,32 @@ def parse_match_metadata(lines, i: int) -> tuple[str, str, int]:
     return venue, round_detail, i
 
 
+def parse_result_block(lines, i: int) -> tuple[int | None, int | None, int]:
+    """
+    Läser resultatrad ("X - Y" eller "-") samt valfri periodrad och publiksiffra.
+    Förutsätter att lines[i] är en resultatrad.
+    """
+    home_score = None
+    away_score = None
+    L = len(lines)
+
+    m = SCORE_RE.match(lines[i])
+    if m:
+        home_score = int(m.group(1))
+        away_score = int(m.group(2))
+    i += 1
+
+    # -------- Periodresultat (valfritt) --------
+    if i < L and lines[i].startswith("("):
+        i += 1
+
+    # -------- Publik (valfritt, används inte) --------
+    if i < L and lines[i].isdigit():
+        i += 1
+
+    return home_score, away_score, i
+
+
 def parse_matches_from_lines(lines):
     """
     Läser rad för rad och bygger matcher så här (DIN ORIGINELLA LOGIK):
@@ -208,6 +239,7 @@ def parse_matches_from_lines(lines):
       - hoppar periodraden om den börjar med "("
       - hoppar publiksiffra om den är heltal
       - nästa rad = arena
+    (resultat/period/publik läses av parse_result_block)
     """
     games = []
     current_date = ""
@@ -250,29 +282,13 @@ def parse_matches_from_lines(lines):
 
             home_score = None
             away_score = None
-            spectators = None
 
             venue = ""
             round_detail = ""
 
             # -------- Resultat (valfritt) --------
             if i < L and is_score_line(lines[i]):
-                result_line = lines[i]
-                i += 1
-
-                m = SCORE_RE.match(result_line)
-                if m:
-                    home_score = int(m.group(1))
-                    away_score = int(m.group(2))
-
-                # -------- Periodresultat (valfritt) --------
-                if i < L and lines[i].startswith("("):
-                    i += 1
-
-                # -------- Publik (valfritt) --------
-                if i < L and lines[i].isdigit():
-                    spectators = int(lines[i])
-                    i += 1
+                home_score, away_score, i = parse_result_block(lines, i)
 
                 # -------- Arena --------
                 if i < L and not looks_like_new_match_start(lines[i]):
@@ -283,17 +299,7 @@ def parse_matches_from_lines(lines):
 
                 # Spelade slutspelsmatcher har resultatet efter metadata.
                 if i < L and is_score_line(lines[i]):
-                    result_line = lines[i]
-                    i += 1
-                    m = SCORE_RE.match(result_line)
-                    if m:
-                        home_score = int(m.group(1))
-                        away_score = int(m.group(2))
-                    if i < L and lines[i].startswith("("):
-                        i += 1
-                    if i < L and lines[i].isdigit():
-                        spectators = int(lines[i])
-                        i += 1
+                    home_score, away_score, i = parse_result_block(lines, i)
 
             games.append(
                 {
@@ -305,7 +311,6 @@ def parse_matches_from_lines(lines):
                     "away_score": away_score,
                     "venue": venue,
                     "round_detail": round_detail,
-                    "spectators": spectators,
                 }
             )
 
@@ -417,8 +422,9 @@ def merge_unique_games(games):
             existing.get("home_score") is not None and existing.get("away_score") is not None
         )
         game_has_score = game.get("home_score") is not None and game.get("away_score") is not None
-        if game_has_score and not existing_has_score:
-            merged[key] = game
+        if game_has_score != existing_has_score:
+            if game_has_score:
+                merged[key] = game
             continue
 
         if len((game.get("venue") or "").strip()) > len((existing.get("venue") or "").strip()):
@@ -492,9 +498,37 @@ def normalize_badge_url(url: str | None) -> str | None:
 
 
 @lru_cache(maxsize=128)
+def lookup_team_badge(query: str) -> str | None:
+    """
+    Slår upp badge hos TheSportsDB. Kastar undantag vid nätverks-/HTTP-fel,
+    vilket gör att lru_cache bara sparar lyckade svar (även "inget lag hittades")
+    och att tillfälliga fel försöks igen vid nästa anrop.
+    """
+    url = f"{THESPORTSDB_BASE}/{THESPORTSDB_API_KEY}/searchteams.php"
+    with httpx.Client(timeout=10) as client:
+        resp = client.get(url, params={"t": query})
+    resp.raise_for_status()
+    data = resp.json()
+
+    teams = data.get("teams") or []
+    if not teams:
+        logger.debug("No TheSportsDB team found for query=%s", query)
+        return None
+
+    team = teams[0]
+    logger.debug(
+        "TheSportsDB matched query=%s -> team=%s sport=%s",
+        query,
+        team.get("strTeam"),
+        team.get("strSport"),
+    )
+    badge = team.get("strBadge") or team.get("strTeamBadge")
+    return normalize_badge_url(badge)
+
+
 def get_team_badge(team_name: str) -> str | None:
     """
-    Hämtar lagets logga (badge) från TheSportsDB och cachar resultatet.
+    Hämtar lagets logga (badge) från TheSportsDB.
 
     Sökterm kan åsidosättas via TEAM_NAME_OVERRIDES (case-insensitive på originalnamnet).
     """
@@ -503,32 +537,19 @@ def get_team_badge(team_name: str) -> str | None:
 
     query = TEAM_NAME_OVERRIDES.get(team_name.lower(), team_name)
     logger.debug("Fetching badge for team=%s query=%s", team_name, query)
-
-    url = f"{THESPORTSDB_BASE}/{THESPORTSDB_API_KEY}/searchteams.php"
     try:
-        with httpx.Client(timeout=10) as client:
-            resp = client.get(url, params={"t": query})
-        resp.raise_for_status()
-        data = resp.json()
+        return lookup_team_badge(query)
     except Exception:
         logger.exception("Error fetching badge for team=%s", team_name)
         return None
-
-    teams = data.get("teams") or []
-    if not teams:
-        return None
-
-    team = teams[0]
-    badge = team.get("strBadge") or team.get("strTeamBadge")
-    return normalize_badge_url(badge)
 
 
 async def attach_badges_async(game):
     """
     Async-wrapper som undviker att blockera event loopen vid badge-hämtning.
+    Returnerar en kopia av matchen så att cachade matcher inte muteras.
     """
-    if not game:
-        return game
+    game = dict(game)
 
     home = game.get("home_team") or ""
     away = game.get("away_team") or ""
@@ -563,6 +584,110 @@ def last_game_too_old(game, now: datetime) -> bool:
     return delta.days > 31
 
 
+def now_in_sweden() -> datetime:
+    """
+    Aktuell tid i svensk tid, utan tzinfo, så att den kan jämföras med
+    matchtiderna från Swehockey (som är naiva svenska tider).
+    """
+    return datetime.now(SWEDEN_TZ).replace(tzinfo=None)
+
+
+# Cache för parsade matcher: undviker att skrapa Swehockey vid varje anrop och
+# gör att senast lyckade schemat kan serveras om alla källor fallerar.
+_schedule_cache: dict = {"games": None, "fetched_at": 0.0}
+_schedule_lock = asyncio.Lock()
+
+
+async def fetch_all_games() -> tuple[list[dict], dict[str, str]]:
+    """
+    Hämtar och parsar alla SCHEDULE_URLS parallellt.
+    Returnerar (matcher, fel per URL).
+    """
+    timeout = httpx.Timeout(connect=5.0, read=20.0, write=10.0, pool=5.0)
+    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+        fetch_results = await asyncio.gather(
+            *[fetch_schedule_html(client, url) for url in SCHEDULE_URLS]
+        )
+
+    all_games = []
+    fetch_errors = {}
+    for url, (html, error) in zip(SCHEDULE_URLS, fetch_results):
+        if error:
+            fetch_errors[url] = error
+        if html:
+            all_games.extend(parse_games_from_html(html))
+
+    return merge_unique_games(all_games), fetch_errors
+
+
+async def load_games() -> tuple[list[dict], list[str]]:
+    """
+    Returnerar (matcher, varningar) med TTL-cache (SCHEDULE_CACHE_SECONDS).
+
+    - Bara helt lyckade hämtningar cachas, så delfel försöks igen nästa anrop.
+    - Om alla källor fallerar serveras senast cachade schema (om det finns).
+    """
+    async with _schedule_lock:
+        cached = _schedule_cache["games"]
+        age = time.monotonic() - _schedule_cache["fetched_at"]
+        if cached is not None and age < SCHEDULE_CACHE_SECONDS:
+            logger.debug("Using cached schedule age=%.0fs", age)
+            return cached, []
+
+        games, fetch_errors = await fetch_all_games()
+        warnings = [f"Failed to fetch {url}: {err}" for url, err in fetch_errors.items()]
+
+        if games and not fetch_errors:
+            _schedule_cache["games"] = games
+            _schedule_cache["fetched_at"] = time.monotonic()
+            return games, warnings
+
+        if games:
+            logger.warning("Partial schedule fetch, errors=%s", fetch_errors)
+            return games, warnings
+
+        if cached is not None:
+            logger.warning(
+                "All schedule fetches failed, serving cached schedule age=%.0fs errors=%s",
+                age,
+                fetch_errors,
+            )
+            warnings.append(f"Serving cached schedule from {age:.0f}s ago")
+            return cached, warnings
+
+    logger.error(
+        "All schedule URL fetches failed for urls=%s errors=%s",
+        SCHEDULE_URLS,
+        fetch_errors,
+    )
+    raise HTTPException(
+        status_code=500,
+        detail={
+            "message": "Failed to fetch schedule(s): all configured schedule URLs failed",
+            "urls": SCHEDULE_URLS,
+            "errors": fetch_errors,
+        },
+    )
+
+
+def game_payload(game) -> dict:
+    """
+    Fälten som exponeras i API-svaret för en match.
+    """
+    return {
+        "date": game["date"],
+        "time": game["time"],
+        "home_team": game["home_team"],
+        "away_team": game["away_team"],
+        "home_score": game["home_score"],
+        "away_score": game["away_score"],
+        "venue": game["venue"],
+        "round_detail": game.get("round_detail", ""),
+        "home_badge": game.get("home_badge"),
+        "away_badge": game.get("away_badge"),
+    }
+
+
 @app.get("/team")
 async def team_endpoint():
     """
@@ -570,38 +695,8 @@ async def team_endpoint():
     Styrs av miljövariabeln TEAM_TAG och SCHEDULE_URL/SCHEDULE_URLS.
     """
     logger.info("Building /team response for team_tag=%s", TEAM_TAG)
-    # 1. Hämta HTML för alla konfigurerade scheman
-    all_games = []
-    timeout = httpx.Timeout(connect=5.0, read=20.0, write=10.0, pool=5.0)
-    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-        fetch_results = await asyncio.gather(
-            *[fetch_schedule_html(client, url) for url in SCHEDULE_URLS]
-        )
-
-    fetch_errors = {}
-    for url, (html, error) in zip(SCHEDULE_URLS, fetch_results):
-        if error:
-            fetch_errors[url] = error
-        if not html:
-            continue
-        all_games.extend(parse_games_from_html(html))
-
-    if not all_games:
-        logger.error(
-            "All schedule URL fetches failed for urls=%s errors=%s",
-            SCHEDULE_URLS,
-            fetch_errors,
-        )
-        raise HTTPException(
-            status_code=500,
-            detail={
-                "message": "Failed to fetch schedule(s): all configured schedule URLs failed",
-                "urls": SCHEDULE_URLS,
-                "errors": fetch_errors,
-            },
-        )
-
-    all_games = merge_unique_games(all_games)
+    # 1. Hämta (eller läs cachade) matcher för alla konfigurerade scheman
+    all_games, warnings = await load_games()
     logger.info("Parsed total unique games=%s", len(all_games))
 
     # 2. Filtrera ut matcher för TEAM_TAG
@@ -610,7 +705,7 @@ async def team_endpoint():
     logger.info("Filtered team games=%s", len(team_games))
 
     # 3. Dela upp i spelade & kommande
-    now = datetime.now()
+    now = now_in_sweden()
     played = [
         g
         for _, g in dated_team_games
@@ -636,10 +731,7 @@ async def team_endpoint():
         attach_badges_async(next_game),
     )
 
-    # 5. Räkna ut resultat ur lagets perspektiv
-    team_result = compute_team_result(last_game)
-
-    # 6. Gissa ett lagnamn
+    # 5. Gissa ett lagnamn
     team_name = guess_team_name([g for _, g in dated_team_games])
     logger.info(
         "Prepared /team response: team_name=%s last_game_date=%s next_game_date=%s",
@@ -648,36 +740,17 @@ async def team_endpoint():
         next_game.get("date"),
     )
 
-    # 7. Return
+    # 6. Return
     return {
         "team_tag": TEAM_TAG,
         "team_name": team_name,
         "schedule_urls": SCHEDULE_URLS,
+        "warnings": warnings,
         "last_game": {
-            "date": last_game["date"],
-            "time": last_game["time"],
-            "home_team": last_game["home_team"],
-            "away_team": last_game["away_team"],
-            "home_score": last_game["home_score"],
-            "away_score": last_game["away_score"],
-            "venue": last_game["venue"],
-            "round_detail": last_game.get("round_detail", ""),
-            "home_badge": last_game.get("home_badge"),
-            "away_badge": last_game.get("away_badge"),
-            "team_result": team_result,
+            **game_payload(last_game),
+            "team_result": compute_team_result(last_game),
         },
-        "next_game": {
-            "date": next_game["date"],
-            "time": next_game["time"],
-            "home_team": next_game["home_team"],
-            "away_team": next_game["away_team"],
-            "home_score": next_game["home_score"],
-            "away_score": next_game["away_score"],
-            "venue": next_game["venue"],
-            "round_detail": next_game.get("round_detail", ""),
-            "home_badge": next_game.get("home_badge"),
-            "away_badge": next_game.get("away_badge"),
-        },
+        "next_game": game_payload(next_game),
     }
 
 
