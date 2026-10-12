@@ -70,6 +70,8 @@ Everything is configured with environment variables.
 | `SCHEDULE_FETCH_BACKOFF_SECONDS` | `0.5` | Wait between attempts (grows with each attempt). |
 | `LOG_LEVEL` | `INFO` | Set to `DEBUG` to see which team TheSportsDB matched for each logo. |
 
+Game times are always handled as Swedish local time, so you don't need to set `TZ` on the container.
+
 ---
 
 ## 🖼️ Team logos
@@ -216,6 +218,8 @@ spec:
             readOnlyRootFilesystem: true
             capabilities:
               drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
           envFrom:
             - configMapRef:
                 name: hockey-api-config
