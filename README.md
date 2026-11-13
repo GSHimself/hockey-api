@@ -312,6 +312,10 @@ A complete [Glance](https://github.com/glanceapp/glance) `custom-api` widget wit
         color: #cc0000;
       }
 
+      .score.team-draw {
+        color: #e6b800;
+      }
+
       .score.team-neutral {
         color: inherit;
       }
@@ -338,6 +342,7 @@ A complete [Glance](https://github.com/glanceapp/glance) `custom-api` widget wit
               <span class="score
                 {{ if eq $teamResult "win" }} team-win
                 {{ else if eq $teamResult "loss" }} team-loss
+                {{ else if eq $teamResult "draw" }} team-draw
                 {{ else }} team-neutral
                 {{ end }}">
                 {{ .JSON.Int "last_game.home_score" }}–{{ .JSON.Int "last_game.away_score" }}
